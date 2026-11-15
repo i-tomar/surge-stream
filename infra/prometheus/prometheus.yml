@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8841"]
+  - job_name: processor
+    static_configs:
+      - targets: ["processor:8842"]
+  - job_name: drift
+    static_configs:
+      - targets: ["drift:8844"]
+  - job_name: replay
+    static_configs:
+      - targets: ["replay:8843"]

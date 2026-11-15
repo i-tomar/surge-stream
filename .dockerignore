@@ -1,0 +1,15 @@
+.venv
+**/__pycache__
+**/*.pyc
+.git
+frontend/node_modules
+frontend/dist
+data/raw/*.parquet
+data/processed
+data/runtime
+mlruns
+mlartifacts
+mlflow.db
+results
+tests
+*.md
