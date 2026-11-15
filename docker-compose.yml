@@ -1,0 +1,205 @@
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.6
+    command:
+      - redpanda
+      - start
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr
+      - internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr
+      - internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr
+      - internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr
+      - redpanda:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --memory
+      - 512M
+      - --overprovisioned
+      - --default-log-level=warn
+    ports:
+      - "19092:19092"
+    volumes:
+      - redpanda:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info", "-X", "brokers=127.0.0.1:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+    mem_limit: 768m
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 256m
+
+  mlflow:
+    build: .
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - sqlite:////mlflow/mlflow.db
+      - --default-artifact-root
+      - /mlflow/artifacts
+    ports:
+      - "5055:5000"
+    volumes:
+      - ./mlflow.db:/mlflow/mlflow.db
+      - ./mlartifacts:/mlflow/artifacts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    mem_limit: 1g
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9095:9090"
+    depends_on:
+      - api
+      - processor
+      - drift
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3333:3000"
+    depends_on:
+      - prometheus
+    mem_limit: 512m
+
+  api:
+    build: .
+    command: ["python", "-m", "surgecast.serving.app"]
+    environment:
+      PORT: "8841"
+      METRICS_PORT: "8841"
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      SURGECAST_DATA: /app/data
+    ports:
+      - "8841:8841"
+    volumes:
+      - ./data:/app/data
+      - ./surgecast:/app/surgecast:ro
+      - ./mlartifacts:/mlflow/artifacts
+      # Host-side training records this absolute path in the registry.
+      # MLflow writes a small metadata file next to the model when it loads.
+      - ./mlartifacts:${HOST_ARTIFACT_DIR:-/var/host-mlartifacts}
+    depends_on:
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    mem_limit: 1g
+
+  processor:
+    build: .
+    command: ["python", "-m", "surgecast.streaming.processor"]
+    environment:
+      METRICS_PORT: "8842"
+      KAFKA_BOOTSTRAP: redpanda:9092
+      REDIS_URL: redis://redis:6379/0
+      SURGECAST_DATA: /app/data
+    ports:
+      - "8842:8842"
+    volumes:
+      - ./data:/app/data
+      - ./surgecast:/app/surgecast:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    mem_limit: 1g
+
+  drift:
+    build: .
+    command: ["python", "-m", "surgecast.drift.service"]
+    environment:
+      METRICS_PORT: "8844"
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      SURGECAST_DATA: /app/data
+    ports:
+      - "8844:8844"
+    volumes:
+      - ./data:/app/data
+      - ./surgecast:/app/surgecast:ro
+      - ./mlartifacts:/mlflow/artifacts
+      - ./mlartifacts:${HOST_ARTIFACT_DIR:-/var/host-mlartifacts}
+    depends_on:
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    mem_limit: 1500m
+
+  replay:
+    profiles: ["replay"]
+    build: .
+    entrypoint: ["python", "-m", "surgecast.streaming.replay"]
+    environment:
+      METRICS_PORT: "8843"
+      KAFKA_BOOTSTRAP: redpanda:9092
+      SURGECAST_DATA: /app/data
+    ports:
+      - "8843:8843"
+    volumes:
+      - ./data:/app/data
+      - ./surgecast:/app/surgecast:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    mem_limit: 1g
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "43124:80"
+    depends_on:
+      - api
+    mem_limit: 128m
+
+volumes:
+  redpanda: {}
