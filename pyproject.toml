@@ -1,0 +1,22 @@
+[project]
+name = "surgecast"
+version = "0.1.0"
+description = "Live NYC taxi-zone demand forecasting on a streaming feature store."
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+src = ["surgecast", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]
